@@ -220,30 +220,54 @@ int Memory::open_proc(const char *name) {
               << info->address << xorstr_("] ") << info->pid << " "
               << info->name << " " << info->path << std::endl;
 
-    // 修复cr3
-    const short MZ_HEADER = 0x5a4d;
-    char *base_section = new char[8];
-    long *base_section_value = (long *)base_section;
-    memset(base_section, 0, 8);
-    CSliceMut<uint8_t> slice(base_section, 8);
-    os.read_raw_into(proc.hProcess.info()->address + 0x520, slice); // win10
-    proc.baseaddr = *base_section_value;
-    // 遍历dtb
-    for (size_t dtb = 0; dtb < SIZE_MAX; dtb += 0x1000) {
-      proc.hProcess.set_dtb(dtb, Address_INVALID);
-      short c5;
-      Read<short>(*base_section_value, c5);
-      if (c5 == MZ_HEADER) {
-        break;
-      }
-    }
-    status = process_status::FOUND_READY;
-  } else {
-    status = process_status::NOT_FOUND;
-  }
-  return ret;
-}
+    // Fix cr3 (DTB) section
+        const short MZ_HEADER = 0x5a4d;
+        char base_section[8] = {0};
+        long *base_section_value = reinterpret_cast<long *>(base_section);
+        CSliceMut<uint8_t> slice(base_section, 8);
 
+        os.read_raw_into(proc.hProcess.info()->address + 0x520, slice); // Win10
+        proc.baseaddr = *base_section_value;
+
+        // Cache the valid DTB to avoid repetitive iteration
+        static size_t cached_dtb = SIZE_MAX;
+        bool valid_dtb_found = false;
+
+        if (cached_dtb == SIZE_MAX) {
+            for (size_t dtb = 0; dtb < SIZE_MAX; dtb += 0x1000) {
+                proc.hProcess.set_dtb(dtb, Address_INVALID);
+                short c5;
+                Read<short>(*base_section_value, c5);
+                if (c5 == MZ_HEADER) {
+                    cached_dtb = dtb;  // Cache this valid DTB
+                    valid_dtb_found = true;
+                    break;
+                }
+            }
+        } else {
+            // Use the cached DTB if it exists
+            proc.hProcess.set_dtb(cached_dtb, Address_INVALID);
+            short c5;
+            Read<short>(*base_section_value, c5);
+            if (c5 == MZ_HEADER) {
+                valid_dtb_found = true;
+            } else {
+                cached_dtb = SIZE_MAX; // Invalidate cache if it's no longer valid
+            }
+        }
+
+        if (valid_dtb_found) {
+            status = process_status::FOUND_READY;
+        } else {
+            std::cout << "No valid DTB found for the process." << std::endl;
+            status = process_status::NOT_FOUND;
+        }
+
+    } else {
+        status = process_status::NOT_FOUND;
+    }
+    return ret;
+}
 Memory::~Memory() {
   if (inventory) {
     mf_inventory_free(inventory);
