@@ -209,18 +209,16 @@ void Memory::speed_test() {
 }
 
 int Memory::open_proc(const char *name) {
-  int ret;
-  const char *target_proc = name;
+    int ret;
+    const char *target_proc = name;
 
-  if (!(ret = os.process_by_name(CSliceRef<uint8_t>(target_proc),
-                                 &proc.hProcess))) {
-    const struct ProcessInfo *info = proc.hProcess.info();
+    if (!(ret = os.process_by_name(CSliceRef<uint8_t>(target_proc), &proc.hProcess))) {
+        const struct ProcessInfo *info = proc.hProcess.info();
 
-    std::cout << target_proc << xorstr_(" process found: 0x") << std::hex
-              << info->address << xorstr_("] ") << info->pid << " "
-              << info->name << " " << info->path << std::endl;
+        std::cout << target_proc << xorstr_(" process found: 0x") << std::hex
+                  << info->address << xorstr_("] ") << info->pid << " "
+                  << info->name << " " << info->path << std::endl;
 
-    // Fix cr3 (DTB) section
         const short MZ_HEADER = 0x5a4d;
         char base_section[8] = {0};
         long *base_section_value = reinterpret_cast<long *>(base_section);
@@ -229,30 +227,37 @@ int Memory::open_proc(const char *name) {
         os.read_raw_into(proc.hProcess.info()->address + 0x520, slice); // Win10
         proc.baseaddr = *base_section_value;
 
-        // Cache the valid DTB to avoid repetitive iteration
         static size_t cached_dtb = SIZE_MAX;
+        static auto last_cache_time = std::chrono::steady_clock::now();
         bool valid_dtb_found = false;
 
-        if (cached_dtb == SIZE_MAX) {
+        auto now = std::chrono::steady_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_cache_time).count();
+
+        // Only refresh the DTB cache if 5 seconds have passed or no valid cached DTB
+        if (cached_dtb == SIZE_MAX || duration >= 5) {
+            last_cache_time = now;
             for (size_t dtb = 0; dtb < SIZE_MAX; dtb += 0x1000) {
                 proc.hProcess.set_dtb(dtb, Address_INVALID);
                 short c5;
                 Read<short>(*base_section_value, c5);
                 if (c5 == MZ_HEADER) {
-                    cached_dtb = dtb;  // Cache this valid DTB
+                    cached_dtb = dtb;
                     valid_dtb_found = true;
+                    std::cout << "New DTB cached: " << std::hex << cached_dtb << std::endl;
                     break;
                 }
             }
         } else {
-            // Use the cached DTB if it exists
             proc.hProcess.set_dtb(cached_dtb, Address_INVALID);
             short c5;
             Read<short>(*base_section_value, c5);
             if (c5 == MZ_HEADER) {
                 valid_dtb_found = true;
             } else {
-                cached_dtb = SIZE_MAX; // Invalidate cache if it's no longer valid
+                // Invalidate cache and reset timestamp if cache is no longer valid
+                cached_dtb = SIZE_MAX;
+                std::cout << "Cached DTB invalidated." << std::endl;
             }
         }
 
@@ -262,7 +267,6 @@ int Memory::open_proc(const char *name) {
             std::cout << "No valid DTB found for the process." << std::endl;
             status = process_status::NOT_FOUND;
         }
-
     } else {
         status = process_status::NOT_FOUND;
     }
